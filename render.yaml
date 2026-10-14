@@ -1,0 +1,37 @@
+# Render "Blueprint" - wird automatisch erkannt, wenn du dein Repo bei
+# Render als "Blueprint" verbindest. Legt Web Service + Cron Job in einem
+# Schritt an. Beide sprechen über TURSO_DATABASE_URL/TURSO_AUTH_TOKEN
+# dieselbe externe Turso-Datenbank an - kein lokales Disk-Volume nötig
+# (das gibt's im Render-Gratis-Tarif ohnehin nicht).
+#
+# TURSO_DATABASE_URL und TURSO_AUTH_TOKEN musst du nach dem ersten Deploy
+# manuell im Render-Dashboard eintragen (Settings -> Environment), da es
+# sich um Zugangsdaten handelt, die nicht in dieser Datei stehen sollten.
+
+services:
+  - type: web
+    name: portfolio-backend
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: TURSO_DATABASE_URL
+        sync: false   # manuell in der Render-Oberfläche eintragen
+      - key: TURSO_AUTH_TOKEN
+        sync: false   # manuell in der Render-Oberfläche eintragen
+      - key: CORS_ORIGINS
+        value: "*"    # nach dem Deployment auf deine echte Frontend-URL einschränken
+
+  - type: cron
+    name: portfolio-daily-fetch
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python scripts/daily_fetch.py"
+    schedule: "15 21 * * 1-5"   # 21:15 UTC = 22:15 MEZ/23:15 MESZ, Mo-Fr (kein Wochenende)
+    envVars:
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
