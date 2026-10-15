@@ -21,12 +21,16 @@ TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL")  # z.B. "libsql://mein
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 
 if TURSO_DATABASE_URL:
-    # sqlalchemy-libsql übersetzt "sqlite+libsql://" auf die Turso-HTTP-API.
-    # Das "libsql://"-Präfix aus dem Turso-Dashboard wird dafür durch
-    # "sqlite+libsql://" ersetzt, der Auth-Token als Query-Parameter angehängt.
-    _host = TURSO_DATABASE_URL.replace("libsql://", "")
-    DATABASE_URL = f"sqlite+libsql://{_host}?authToken={TURSO_AUTH_TOKEN}&secure=true"
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    # sqlalchemy-libsql 0.2.x nutzt den nativen Turso-Client ueber HTTPS.
+    # "libsql://" aus dem Turso-Dashboard wird durch "sqlite+libsql://" ersetzt,
+    # der Token wird als connect_arg uebergeben (nicht in der URL).
+    _host = TURSO_DATABASE_URL.strip().replace("libsql://", "").replace("https://", "")
+    DATABASE_URL = f"sqlite+libsql://{_host}?secure=true"
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"auth_token": (TURSO_AUTH_TOKEN or "").strip(), "check_same_thread": False},
+        pool_pre_ping=True,
+    )
 else:
     # Lokaler Fallback fürs Entwickeln/Testen ohne Turso-Account
     DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "..", "data", "portfolio.db"))
