@@ -36,6 +36,17 @@ def _normalize_dividend_yield(raw):
     return raw if raw > 1 else raw * 100
 
 
+def _dividend_yield_percent(info):
+    """Dividendenrendite in Prozent. trailingAnnualDividendYield ist bei Yahoo
+    immer ein Dezimalanteil (0.023 = 2,3 %). Das Feld dividendYield ist in
+    neueren yfinance-Versionen bereits in Prozent - nur als Fallback genutzt."""
+    dec = info.get("trailingAnnualDividendYield")
+    if dec is not None:
+        return dec * 100
+    raw = info.get("dividendYield")
+    return raw  # neuere yfinance-Versionen liefern hier schon Prozent
+
+
 def fetch_fundamentals_for_ticker(ticker: str):
     """Gibt ein dict mit allen Kennzahlen zurück, fehlende Felder als None."""
     try:
@@ -47,7 +58,7 @@ def fetch_fundamentals_for_ticker(ticker: str):
 
     return {
         "beta": info.get("beta"),
-        "dividend_yield": _normalize_dividend_yield(info.get("dividendYield")),
+        "dividend_yield": _dividend_yield_percent(info),
         "eps_ttm": info.get("trailingEps"),
         "analyst_rating_mean": info.get("recommendationMean"),
         "analyst_rating_key": info.get("recommendationKey"),
