@@ -1,6 +1,6 @@
 """
-Täglicher Kursabruf - das ist das Skript, das Render als 'Cron Job' ausführt
-(siehe render.yaml, dort steht der Zeitplan).
+Täglicher Kursabruf - das ist das Skript, das GitHub Actions täglich ausführt
+(siehe .github/workflows/daily_fetch.yml).
 
 Macht vier Dinge, in dieser Reihenfolge:
   1. Neue Positionen anlegen (falls seed_positions.py erweitert wurde) und
@@ -21,6 +21,7 @@ Empfohlener Zeitplan (in render.yaml): 22:15 Uhr MEZ / 22:15 CET.
 
 import sys
 import os
+import time
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -104,6 +105,7 @@ def fetch_and_save_prices(db, positions):
     print(f"Kurse: {saved} aktualisiert, {len(failed)} fehlgeschlagen.")
     if failed:
         print("Fehlgeschlagen:", ", ".join(failed))
+    return saved
 
 
 def fetch_and_save_fundamentals(db, positions):
@@ -114,6 +116,7 @@ def fetch_and_save_fundamentals(db, positions):
     ok, failed = 0, []
     for pos in targets:
         data = fetch_fundamentals_for_ticker(pos.ticker) or {}
+        time.sleep(1.5)  # Pause gegen Yahoo-Rate-Limit
 
         history_rows = (
             db.query(PriceHistory)
@@ -173,7 +176,11 @@ def main():
     ensure_deep_history_for_benchmarks(db)
 
     positions = db.query(Position).filter(Position.active == 1).all()
-    fetch_and_save_prices(db, positions)
+    saved = fetch_and_save_prices(db, positions)
+    if saved == 0 and positions:
+        db.close()
+        print("\nFEHLER: Kein einziger Kurs konnte abgerufen werden (Yahoo blockiert?).")
+        sys.exit(1)
     fetch_and_save_fundamentals(db, positions)
 
     db.close()
@@ -182,3 +189,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+  
