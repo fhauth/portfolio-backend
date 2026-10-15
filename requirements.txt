@@ -3,5 +3,5 @@ uvicorn[standard]==0.32.0
 sqlalchemy==2.0.35
 sqlalchemy-libsql==0.2.0
 libsql-experimental==0.0.55
-yfinance==0.2.44
+yfinance==1.7.0
 python-multipart==0.0.12
