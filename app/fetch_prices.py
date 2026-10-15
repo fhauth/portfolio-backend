@@ -11,6 +11,7 @@ Diese Funktion wird von zwei Stellen aufgerufen:
 2. app/main.py - ein manueller "Jetzt aktualisieren"-Endpunkt (optional, live)
 """
 
+import time
 import yfinance as yf
 from datetime import date, datetime
 import logging
@@ -47,6 +48,7 @@ def fetch_all(positions):
     results = []
     for pos in positions:
         price, currency = fetch_current_price(pos.ticker)
+        time.sleep(1.0)  # Pause, damit Yahoo nicht mit 429 (Too Many Requests) blockt
         results.append({
             "position_id": pos.id,
             "name": pos.name,
