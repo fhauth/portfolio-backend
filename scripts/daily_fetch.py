@@ -54,12 +54,15 @@ def backfill_new_positions(db, new_positions):
         print(f"  -> {added} historische Kurse geladen.")
 
 
-def ensure_deep_history_for_benchmarks(db):
-    """Falls ein Benchmark-Baustein (z.B. nachträglich markiert) noch keine
-    ~4+ Jahre Historie hat, zusätzlichen 5-Jahres-Backfill nachholen."""
-    benchmark_positions = db.query(Position).filter(Position.benchmark_label.isnot(None)).all()
-    cutoff = date.today() - timedelta(days=4 * 365)
-    for pos in benchmark_positions:
+def ensure_history_for_all(db):
+    """Stellt sicher, dass jede aktive Position genug Kurshistorie hat:
+    Benchmark-Bausteine ~5 Jahre (Kalenderjahres-Renditen), alle anderen ~1 Jahr
+    (5-Tage-/1-Monats-Vergleich und Volatilität). Holt fehlende Historie nach,
+    auch wenn die Position schon vorher (z.B. durch den Web Service) angelegt wurde."""
+    positions = db.query(Position).filter(Position.active == 1).all()
+    for pos in positions:
+        deep = pos.benchmark_label is not None
+        cutoff = date.today() - timedelta(days=4 * 365 if deep else 330)
         earliest = (
             db.query(PriceHistory)
             .filter(PriceHistory.position_id == pos.id)
@@ -67,10 +70,12 @@ def ensure_deep_history_for_benchmarks(db):
             .first()
         )
         if earliest is None or earliest.date > cutoff:
-            print(f"Vertiefe Historie für Benchmark-Baustein {pos.name} ({pos.ticker}) auf 5 Jahre ...")
-            history = backfill_history(pos.ticker, period="5y")
+            period = "5y" if deep else "1y"
+            print(f"Lade Historie ({period}) für {pos.name} ({pos.ticker}) ...")
+            history = backfill_history(pos.ticker, period=period)
             added = save_history(db, pos.id, history)
-            print(f"  -> {added} zusätzliche historische Kurse geladen.")
+            print(f"  -> {added} historische Kurse geladen.")
+            time.sleep(1.0)
 
 
 def fetch_and_save_prices(db, positions):
@@ -173,7 +178,7 @@ def main():
     if new_positions:
         backfill_new_positions(db, new_positions)
 
-    ensure_deep_history_for_benchmarks(db)
+    ensure_history_for_all(db)
 
     positions = db.query(Position).filter(Position.active == 1).all()
     saved = fetch_and_save_prices(db, positions)
@@ -189,4 +194,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-  
