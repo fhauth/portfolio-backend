@@ -55,25 +55,25 @@ POSITIONS = [
     # ETF_PERFORMANCE-Werte im Frontend).
     {"name": "iShares Core MSCI EM IMI (Benchmark-Proxy)",              "ticker": "IS3N.DE", "asset_class": "BENCHMARK", "benchmark_label": "MSCI Emerging Markets"},
     {"name": "iShares Core Global Aggregate Bond EUR Hedged (Benchmark-Proxy)", "ticker": "EUNA.DE", "asset_class": "BENCHMARK", "benchmark_label": "Bloomberg Global Aggregate"},
-    {"name": "iShares Diversified Commodity Swap (Benchmark-Proxy)",   "ticker": "ICOM.L",  "asset_class": "BENCHMARK", "benchmark_label": "Bloomberg Commodity Index"},
     {"name": "Xtrackers EUR Overnight Rate Swap (Benchmark-Proxy)",     "ticker": "XEON.DE", "asset_class": "BENCHMARK", "benchmark_label": "€STR"},
 ]
 
 
-# Umbenennungen bestehender Positionen (alter Name -> neuer Name, neuer Ticker).
-# Nötig, wenn ein Benchmark-Proxy ausgetauscht wird, ohne die DB neu anzulegen.
-RENAMES = {
-    "Invesco Bloomberg Commodity (Benchmark-Proxy)": ("iShares Diversified Commodity Swap (Benchmark-Proxy)", "ICOM.L"),
-}
+# Aus der Überwachung genommene Positionen (werden in der DB deaktiviert und
+# nicht mehr als Benchmark-Baustein genutzt). Rohstoffe sind aktuell nicht relevant.
+RETIRED = [
+    "Invesco Bloomberg Commodity (Benchmark-Proxy)",
+    "iShares Diversified Commodity Swap (Benchmark-Proxy)",
+]
 
 
 def seed(db):
     from .database import Position
-    for old_name, (new_name, new_ticker) in RENAMES.items():
-        old = db.query(Position).filter(Position.name == old_name).first()
-        if old is not None and not db.query(Position).filter(Position.name == new_name).first():
-            old.name = new_name
-            old.ticker = new_ticker
+    for name in RETIRED:
+        old = db.query(Position).filter(Position.name == name).first()
+        if old is not None and (old.active or old.benchmark_label):
+            old.active = 0
+            old.benchmark_label = None
     db.commit()
     existing_by_name = {p.name: p for p in db.query(Position).all()}
     new_positions = []
