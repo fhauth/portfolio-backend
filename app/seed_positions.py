@@ -55,15 +55,15 @@ POSITIONS = [
     # ETF_PERFORMANCE-Werte im Frontend).
     {"name": "iShares Core MSCI EM IMI (Benchmark-Proxy)",              "ticker": "IS3N.DE", "asset_class": "BENCHMARK", "benchmark_label": "MSCI Emerging Markets"},
     {"name": "iShares Core Global Aggregate Bond EUR Hedged (Benchmark-Proxy)", "ticker": "EUNA.DE", "asset_class": "BENCHMARK", "benchmark_label": "Bloomberg Global Aggregate"},
-    {"name": "Xtrackers EUR Overnight Rate Swap (Benchmark-Proxy)",     "ticker": "XEON.DE", "asset_class": "BENCHMARK", "benchmark_label": "€STR"},
 ]
 
 
 # Aus der Überwachung genommene Positionen (werden in der DB deaktiviert und
-# nicht mehr als Benchmark-Baustein genutzt). Rohstoffe sind aktuell nicht relevant.
+# nicht mehr als Benchmark-Baustein genutzt). Rohstoffe und Geldmarkt sind aktuell nicht relevant.
 RETIRED = [
     "Invesco Bloomberg Commodity (Benchmark-Proxy)",
     "iShares Diversified Commodity Swap (Benchmark-Proxy)",
+    "Xtrackers EUR Overnight Rate Swap (Benchmark-Proxy)",
 ]
 
 
