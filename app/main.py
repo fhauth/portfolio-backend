@@ -10,6 +10,10 @@ Endpunkte:
   GET  /api/fundamentals        - Beta, Volatilität, Dividendenrendite, EPS, Analystenkonsens (nur Aktien), Kursziel je Position
   POST /api/fundamentals/refresh - manueller Sofort-Abruf der Fundamentaldaten
   GET  /api/benchmark-performance - Kalenderjahres-Renditen je Benchmark-Baustein, aus eigener Kurshistorie berechnet
+  POST /api/watchlist/add       - neuen Titel (Yahoo-Ticker) zur Watchlist hinzufügen (für die Handelssimulation)
+  POST /api/watchlist/remove    - Titel wieder aus der Watchlist nehmen (deaktivieren)
+  GET  /api/fx                  - Wechselkurse (Fremdwährung je 1 EUR) zur Umrechnung in Euro
+  GET  /api/history             - Kursverläufe aller aktiven Positionen für den Performance-Vergleich
 
 CORS: Wir setzen bewusst erlaubte Ursprünge (CORS_ORIGINS), damit NUR unser
 eigenes Frontend diese API ansprechen darf - nicht "jede Webseite", wie es
@@ -17,17 +21,20 @@ bei Yahoo Finance selbst der Fall wäre.
 """
 
 import os
+import re
 import json
+from typing import Optional
 from datetime import date, timedelta
 from fastapi import FastAPI, Depends, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from .database import init_db, get_db, Position, PriceHistory, AppState, Fundamentals
 from .seed_positions import seed
-from .fetch_prices import fetch_all
-from .fetch_fundamentals import fetch_fundamentals_for_ticker, compute_annualized_volatility
+from .fetch_prices import fetch_all, fetch_current_price
+from .fetch_fundamentals import fetch_fundamentals_for_ticker, compute_annualized_volatility, backfill_history
 
 app = FastAPI(title="Portfolio Benchmark API")
 
@@ -335,4 +342,170 @@ def get_benchmark_performance(db: Session = Depends(get_db)):
 
         out[pos.benchmark_label] = result_for_position
 
+    return out
+
+
+# ---------- Handelssimulation: Watchlist erweitern, Wechselkurse ----------
+
+class AddPositionBody(BaseModel):
+    ticker: str
+    name: Optional[str] = None
+
+
+class RemovePositionBody(BaseModel):
+    id: int
+
+
+def _fx_code(currency):
+    """Yahoo meldet London-Kurse in Pence ('GBp'); Wechselkurs läuft trotzdem über GBP."""
+    return (currency or "").upper()
+
+
+def _ensure_fx_position(db, currency):
+    """Legt (falls nötig) eine Wechselkurs-Position EUR/<Währung> an, damit der nächste
+    Abruf den Kurs mitliefert. Gibt True zurück, wenn neu angelegt."""
+    code = _fx_code(currency)
+    if not code or code == "EUR" or len(code) != 3:
+        return False
+    ticker = f"EUR{code}=X"
+    if db.query(Position).filter(Position.ticker == ticker).first():
+        return False
+    db.add(Position(name=f"FX EUR/{code}", ticker=ticker, asset_class="BENCHMARK", active=1))
+    db.commit()
+    return True
+
+
+@app.post("/api/watchlist/add")
+def add_to_watchlist(body: AddPositionBody, db: Session = Depends(get_db)):
+    """Neuen Titel zur Watchlist hinzufügen. Der Titel wird beim täglichen Abruf automatisch
+    mit Kurs, Historie und Kennzahlen versorgt. Zusätzlich versuchen wir hier sofort Kurs und
+    Kennzahlen zu laden - klappt das (z.B. weil Yahoo gerade blockt) nicht, kommt alles beim
+    nächsten Lauf."""
+    ticker = body.ticker.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9.\-=^]{1,20}", ticker):
+        raise HTTPException(status_code=422, detail="Ungültiger Ticker (erlaubt: Buchstaben, Ziffern, . - = ^).")
+
+    existing = db.query(Position).filter(Position.ticker == ticker).first()
+    if existing:
+        was_inactive = not existing.active
+        existing.active = 1
+        db.commit()
+        return {"id": existing.id, "name": existing.name, "ticker": existing.ticker,
+                "assetClass": existing.asset_class, "verified": True, "alreadyExisted": True,
+                "reactivated": was_inactive,
+                "message": "Titel ist bereits in der Watchlist."}
+
+    price, currency = fetch_current_price(ticker)
+    name = (body.name or "").strip()
+    asset_class = "STOCK"
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).get_info()
+        if not name:
+            name = info.get("shortName") or info.get("longName") or ""
+        if info.get("quoteType") in ("ETF", "MUTUALFUND"):
+            asset_class = "FUND"
+        if not currency:
+            currency = info.get("currency")
+    except Exception:
+        pass
+    name = name or ticker
+    if db.query(Position).filter(Position.name == name).first():
+        name = f"{name} ({ticker})"
+
+    pos = Position(name=name, ticker=ticker, asset_class=asset_class, active=1)
+    db.add(pos)
+    db.commit()
+    db.refresh(pos)
+
+    verified = price is not None
+    if verified:
+        db.add(PriceHistory(position_id=pos.id, date=date.today(), close_price=price, currency=currency))
+        db.commit()
+        try:
+            from .database import PriceHistory as PH
+            for d, close in backfill_history(ticker, period="1y"):
+                if not db.query(PH).filter(PH.position_id == pos.id, PH.date == d).first():
+                    db.add(PH(position_id=pos.id, date=d, close_price=close, currency=None))
+            db.commit()
+        except Exception:
+            db.rollback()
+        try:
+            data = fetch_fundamentals_for_ticker(ticker) or {}
+            closes = [r.close_price for r in db.query(PriceHistory).filter(PriceHistory.position_id == pos.id).order_by(PriceHistory.date).all()]
+            row = Fundamentals(position_id=pos.id)
+            row.beta = data.get("beta")
+            row.volatility_1y = compute_annualized_volatility(closes)
+            row.dividend_yield = data.get("dividend_yield")
+            row.eps_ttm = data.get("eps_ttm")
+            row.currency = data.get("currency") or currency
+            if asset_class == "STOCK":
+                for k in ("analyst_rating_mean", "analyst_rating_key", "num_analysts",
+                          "price_target_mean", "price_target_high", "price_target_low"):
+                    setattr(row, k, data.get(k))
+            db.add(row)
+            db.commit()
+        except Exception:
+            db.rollback()
+    _ensure_fx_position(db, currency)
+
+    return {"id": pos.id, "name": pos.name, "ticker": pos.ticker, "assetClass": pos.asset_class,
+            "verified": verified, "alreadyExisted": False,
+            "message": ("Titel hinzugefügt, Kurs und Kennzahlen sind geladen." if verified else
+                        "Titel hinzugefügt, aber Yahoo hat keinen Kurs geliefert (Ticker prüfen). "
+                        "Kurs und Kennzahlen kommen beim nächsten täglichen Abruf, falls der Ticker stimmt.")}
+
+
+@app.post("/api/watchlist/remove")
+def remove_from_watchlist(body: RemovePositionBody, db: Session = Depends(get_db)):
+    pos = db.query(Position).filter(Position.id == body.id).first()
+    if not pos or pos.asset_class == "BENCHMARK":
+        raise HTTPException(status_code=404, detail="Titel nicht gefunden.")
+    pos.active = 0
+    db.commit()
+    return {"id": pos.id, "name": pos.name, "removed": True}
+
+
+@app.get("/api/fx")
+def get_fx(db: Session = Depends(get_db)):
+    """Wechselkurse als {"USD": 1.17, "KRW": 1612.0, ...} = Fremdwährung je 1 EUR (letzter Abruf)."""
+    out = {}
+    fx_positions = db.query(Position).filter(Position.active == 1, Position.ticker.like("EUR%=X")).all()
+    for p in fx_positions:
+        latest = (db.query(PriceHistory).filter(PriceHistory.position_id == p.id)
+                  .order_by(desc(PriceHistory.date)).first())
+        if latest and len(p.ticker) == 8:
+            out[p.ticker[3:6]] = latest.close_price
+    out["EUR"] = 1.0
+    return out
+
+
+# ---------- Kursverläufe für den Performance-Vergleich im Tool ----------
+
+@app.get("/api/history")
+def get_history(days: int = 800, db: Session = Depends(get_db)):
+    """Tägliche Schlusskurse aller aktiven Positionen (inkl. Benchmark-Proxys und
+    Wechselkurse) der letzten `days` Tage. Das Frontend berechnet daraus die
+    Wertentwicklung von Portfolio und Benchmark für frei wählbare Zeiträume."""
+    days = max(30, min(days, 2000))
+    since = date.today() - timedelta(days=days)
+    out = []
+    for p in db.query(Position).filter(Position.active == 1).all():
+        rows = (db.query(PriceHistory)
+                .filter(PriceHistory.position_id == p.id, PriceHistory.date >= since)
+                .order_by(PriceHistory.date).all())
+        if not rows:
+            continue
+        cur_row = (db.query(PriceHistory)
+                   .filter(PriceHistory.position_id == p.id, PriceHistory.currency.isnot(None))
+                   .order_by(desc(PriceHistory.date)).first())
+        out.append({
+            "id": p.id,
+            "name": p.name,
+            "ticker": p.ticker,
+            "assetClass": p.asset_class,
+            "benchmarkLabel": p.benchmark_label,
+            "currency": cur_row.currency if cur_row else None,
+            "series": [[r.date.isoformat(), r.close_price] for r in rows],
+        })
     return out
