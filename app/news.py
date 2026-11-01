@@ -1,12 +1,15 @@
 """
 Nachrichtenabruf für das Tool (kostenlos, ohne API-Schlüssel).
 
-Quellen:
-  - Meldungen je Titel:  Yahoo Finance (über yfinance, englisch) und Google News RSS
-                         (Suche nach dem Firmennamen, deutsch)
-  - Wirtschaft/Makro:    RSS-Feeds von Tagesschau, Handelsblatt, FAZ, EZB und Google News
-                         (Rubrik Wirtschaft). Es werden nur Schlagzeilen mit Link übernommen,
-                         keine Volltexte.
+Quellen und Auswahl:
+  - Es werden ausschließlich Meldungen von Nachrichtenagenturen angezeigt (Reuters, AP,
+    AFP, dpa/dpa-AFX, Bloomberg, Dow Jones). Analysen und Beiträge von Finanzportalen,
+    Blogs und Pressemitteilungs-Diensten werden verworfen (siehe is_agency).
+  - Meldungen je Titel:  Yahoo Finance (über yfinance) und Google News RSS (Suche nach dem
+                         Firmennamen, eingeschränkt auf Agentur-Seiten)
+  - Wirtschaft/Makro:    Google-News-Suchen je Agentur sowie die Pressemitteilungen der EZB
+                         als offizielle Primärquelle. Es werden nur Schlagzeilen mit Link
+                         übernommen, keine Volltexte.
 
 Jede Quelle ist einzeln abgesichert: fällt ein Feed aus, laufen die anderen weiter, und die
 Antwort nennt, welche Feeds nicht geantwortet haben. Ergebnisse werden kurz im Speicher
@@ -29,22 +32,44 @@ logger = logging.getLogger("news")
 
 CACHE_SECONDS = 20 * 60
 MAX_AGE_DAYS_TITLES = 14
-MAX_ITEMS_PER_TITLE = 6
+MAX_ITEMS_PER_TITLE = 5
 MAX_MACRO_ITEMS = 40
 HTTP_TIMEOUT = 8
 MAX_BYTES = 2_000_000
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PortfolioBenchmarkTool/1.0)"}
 
-# (Anzeigename, URL, Sprache)
+# (Anzeigename, URL, Sprache, nur_Agenturen)
+_G_DE = "&hl=de&gl=DE&ceid=DE:de"
+_G_EN = "&hl=en-US&gl=US&ceid=US:en"
 MACRO_FEEDS = [
-    ("Tagesschau Wirtschaft", "https://www.tagesschau.de/wirtschaft/index~rss2.xml", "de"),
-    ("Handelsblatt Finanzen", "https://www.handelsblatt.com/contentexport/feed/finanzen", "de"),
-    ("Handelsblatt Unternehmen", "https://www.handelsblatt.com/contentexport/feed/unternehmen", "de"),
-    ("FAZ Finanzen", "https://www.faz.net/rss/aktuell/finanzen/", "de"),
-    ("FAZ Wirtschaft", "https://www.faz.net/rss/aktuell/wirtschaft/", "de"),
-    ("EZB Pressemitteilungen", "https://www.ecb.europa.eu/rss/press.xml", "en"),
-    ("Google News Wirtschaft", "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=de&gl=DE&ceid=DE:de", "de"),
+    ("Reuters (Wirtschaft)", "https://news.google.com/rss/search?q=Wirtschaft+OR+B%C3%B6rse+OR+Konjunktur+OR+Zinsen+OR+DAX+site:reuters.com+when:2d" + _G_DE, "de", True),
+    ("Reuters (Markets)", "https://news.google.com/rss/search?q=markets+OR+economy+OR+inflation+OR+ECB+OR+Fed+site:reuters.com+when:2d" + _G_EN, "en", True),
+    ("AP (Wirtschaft)", "https://news.google.com/rss/search?q=economy+OR+markets+OR+inflation+OR+stocks+site:apnews.com+when:2d" + _G_EN, "en", True),
+    ("Bloomberg (Markets)", "https://news.google.com/rss/search?q=markets+OR+economy+OR+central+bank+site:bloomberg.com+when:2d" + _G_EN, "en", True),
+    ("dpa-AFX (Wirtschaft)", "https://news.google.com/rss/search?q=dpa-AFX+Wirtschaft+OR+B%C3%B6rse+OR+Konjunktur+when:2d" + _G_DE, "de", True),
+    ("EZB Pressemitteilungen", "https://www.ecb.europa.eu/rss/press.xml", "en", False),
 ]
+
+# Nachrichtenagenturen, deren Meldungen angezeigt werden. Geprüft wird der Quellenname
+# und (falls vorhanden) die Domain der Quelle.
+AGENCY_NAME_RE = re.compile(
+    r"\b(reuters|associated press|ap news|ap|afp|agence france[- ]presse|dpa|dpa-afx|"
+    r"deutsche presse[- ]agentur|bloomberg|dow jones)\b", re.IGNORECASE)
+AGENCY_DOMAINS = ("reuters.com", "apnews.com", "afp.com", "dpa.com", "dpa-afx.de",
+                  "bloomberg.com", "dowjones.com")
+
+
+def is_agency(source, source_url=None):
+    """True, wenn die Quelle eine der zugelassenen Nachrichtenagenturen ist."""
+    if source_url:
+        host = re.sub(r"^https?://(www\.)?", "", source_url.lower()).split("/")[0]
+        if any(host == d or host.endswith("." + d) for d in AGENCY_DOMAINS):
+            return True
+    return bool(source and AGENCY_NAME_RE.search(source))
+
+
+# Site-Filter für die Google-News-Suche (reduziert Treffer auf Agenturseiten)
+AGENCY_SITE_QUERY = "(site:reuters.com OR site:apnews.com OR site:bloomberg.com OR site:afp.com OR site:dpa-afx.de)"
 
 _cache = {}
 
@@ -116,9 +141,14 @@ def parse_feed(xml_bytes, default_source=""):
                     break
         published = _parse_date(_child_text(el, "pubDate") or _child_text(el, "published") or _child_text(el, "updated"))
         source = _clean(_child_text(el, "source")) or default_source
+        source_url = ""
+        for c in el:
+            if _local(c.tag) == "source" and c.get("url"):
+                source_url = c.get("url")
+                break
         url = _safe_url(url)
         if title and url:
-            items.append({"title": title, "url": url, "source": source, "published": published})
+            items.append({"title": title, "url": url, "source": source, "source_url": source_url, "published": published})
     return items
 
 
@@ -147,13 +177,15 @@ def fetch_macro(force=False):
         return cached
     feeds_status, items = [], []
 
-    def one(name, url, lang):
+    def one(name, url, lang, only_agency):
         data = _get(url)
         parsed = parse_feed(data, default_source=name)
+        if only_agency:
+            parsed = [it for it in parsed if is_agency(it["source"], it.get("source_url"))]
         return name, lang, parsed
 
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(one, n, u, l): n for n, u, l in MACRO_FEEDS}
+        futures = {pool.submit(one, n, u, l, a): n for n, u, l, a in MACRO_FEEDS}
         try:
             for f in as_completed(futures, timeout=30):
                 n = futures[f]
@@ -164,9 +196,8 @@ def fetch_macro(force=False):
                         # Google News hängt " - Quelle" an die Überschrift
                         title = it["title"]
                         src = it["source"]
-                        if name.startswith("Google News") and " - " in title:
-                            title, _, tail = title.rpartition(" - ")
-                            src = tail or src
+                        if src and title.endswith(" - " + src):
+                            title = title[: -len(" - " + src)]
                         items.append({"title": title, "url": it["url"], "source": src or name,
                                       "feed": name, "lang": lang, "published": it["published"]})
                 except Exception as e:
@@ -175,7 +206,7 @@ def fetch_macro(force=False):
         except Exception:
             pass
     done = {s["name"] for s in feeds_status}
-    for n, _, _ in MACRO_FEEDS:
+    for n, _, _, _ in MACRO_FEEDS:
         if n not in done:
             feeds_status.append({"name": n, "ok": False, "count": 0})
 
@@ -212,16 +243,18 @@ def _yahoo_news(ticker):
             pub = datetime.fromtimestamp(n["providerPublishTime"], tz=timezone.utc)
         source = (c.get("provider") or {}).get("displayName") or n.get("publisher") or "Yahoo Finance"
         url = _safe_url(url)
-        if title and url:
+        if title and url and is_agency(source):
             out.append({"title": title, "url": url, "source": source, "published": pub, "lang": "en"})
     return out
 
 
 def _google_news(name):
-    q = quote_plus(f"{_search_name(name)} Aktie")
+    q = quote_plus(f"{_search_name(name)} {AGENCY_SITE_QUERY} when:14d")
     url = f"https://news.google.com/rss/search?q={q}&hl=de&gl=DE&ceid=DE:de"
     out = []
     for it in parse_feed(_get(url), default_source="Google News"):
+        if not is_agency(it["source"], it.get("source_url")):
+            continue
         title, src = it["title"], it["source"]
         if " - " in title:
             title, _, tail = title.rpartition(" - ")
