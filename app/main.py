@@ -13,6 +13,9 @@ Endpunkte:
   POST /api/watchlist/add       - neuen Titel (Yahoo-Ticker) zur Watchlist hinzufügen (für die Handelssimulation)
   POST /api/watchlist/remove    - Titel wieder aus der Watchlist nehmen (deaktivieren)
   GET  /api/fx                  - Wechselkurse (Fremdwährung je 1 EUR) zur Umrechnung in Euro
+  GET  /api/watchlist           - (erweitert um Sektor und Sektor-Rendite je Titel)
+  GET  /api/news/titles         - aktuelle Meldungen zu den Einzelaktien (Yahoo Finance + Google News)
+  GET  /api/news/macro          - Wirtschafts-Schlagzeilen (Tagesschau, Handelsblatt, FAZ, EZB, Google News)
   GET  /api/history             - Kursverläufe aller aktiven Positionen für den Performance-Vergleich
 
 CORS: Wir setzen bewusst erlaubte Ursprünge (CORS_ORIGINS), damit NUR unser
@@ -32,7 +35,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from .database import init_db, get_db, Position, PriceHistory, AppState, Fundamentals
-from .seed_positions import seed
+from . import news as newsmod
+from .seed_positions import seed, STOCK_SECTORS, SECTOR_ETFS, YAHOO_SECTOR_MAP
 from .fetch_prices import fetch_all, fetch_current_price
 from .fetch_fundamentals import fetch_fundamentals_for_ticker, compute_annualized_volatility, backfill_history
 
@@ -101,6 +105,32 @@ def _closest_price_before(db: Session, position_id: int, target_date: date):
     return row.close_price if row else None
 
 
+def _load_sector_map(db):
+    """Sektoren für selbst hinzugefügte Titel: {Positionsname: Sektor}."""
+    row = db.query(AppState).filter(AppState.key == "sector_map").first()
+    try:
+        return json.loads(row.value_json) if row else {}
+    except Exception:
+        return {}
+
+
+def _save_sector(db, name, sector):
+    smap = _load_sector_map(db)
+    smap[name] = sector
+    row = db.query(AppState).filter(AppState.key == "sector_map").first()
+    if row:
+        row.value_json = json.dumps(smap, ensure_ascii=False)
+    else:
+        db.add(AppState(key="sector_map", value_json=json.dumps(smap, ensure_ascii=False)))
+    db.commit()
+
+
+def _pct(now, then):
+    if now is None or then is None or then == 0:
+        return None
+    return round((now / then - 1) * 100, 2)
+
+
 @app.get("/api/watchlist")
 def get_watchlist(db: Session = Depends(get_db)):
     positions = db.query(Position).filter(Position.active == 1, Position.asset_class != "BENCHMARK").all()
@@ -109,6 +139,30 @@ def get_watchlist(db: Session = Depends(get_db)):
     one_month_ago = today - timedelta(days=30)
 
     out = []
+    smap = _load_sector_map(db)
+    etf_perf_cache = {}
+
+    def sector_perf(sector):
+        """Rendite des Sektor-ETFs über dieselben Zeitfenster wie die Einzeltitel.
+        Bevorzugt MSCI World (EUR); liefert dieser keine Kurse, Rückfall auf den US-SPDR-ETF."""
+        if sector in etf_perf_cache:
+            return etf_perf_cache[sector]
+        res = (None, None, None)
+        for i, etf_name in enumerate(SECTOR_ETFS.get(sector, [])):
+            etf = db.query(Position).filter(Position.name == etf_name).first()
+            if not etf:
+                continue
+            last = (db.query(PriceHistory).filter(PriceHistory.position_id == etf.id)
+                    .order_by(desc(PriceHistory.date)).first())
+            now_px = last.close_price if last else None
+            r5 = _pct(now_px, _closest_price_before(db, etf.id, five_trading_days_ago))
+            r1 = _pct(now_px, _closest_price_before(db, etf.id, one_month_ago))
+            if r5 is not None or r1 is not None:
+                res = (r5, r1, "MSCI World" if i == 0 else "US (S&P 500)")
+                break
+        etf_perf_cache[sector] = res
+        return res
+
     for p in positions:
         latest = (
             db.query(PriceHistory)
@@ -119,6 +173,8 @@ def get_watchlist(db: Session = Depends(get_db)):
         price_now = latest.close_price if latest else None
         price_5d = _closest_price_before(db, p.id, five_trading_days_ago)
         price_1m = _closest_price_before(db, p.id, one_month_ago)
+        sector = STOCK_SECTORS.get(p.name) or smap.get(p.name) if p.asset_class == "STOCK" else None
+        sec5, sec1m, sec_src = sector_perf(sector) if sector else (None, None, None)
 
         out.append({
             "id": p.id,
@@ -129,6 +185,10 @@ def get_watchlist(db: Session = Depends(get_db)):
             "price1m": price_1m,
             "currency": latest.currency if latest else None,
             "lastUpdated": latest.date.isoformat() if latest else None,
+            "sector": sector,
+            "sectorRet5d": sec5,
+            "sectorRet1m": sec1m,
+            "sectorSource": sec_src,
         })
     return out
 
@@ -398,6 +458,7 @@ def add_to_watchlist(body: AddPositionBody, db: Session = Depends(get_db)):
     price, currency = fetch_current_price(ticker)
     name = (body.name or "").strip()
     asset_class = "STOCK"
+    yahoo_sector = None
     try:
         import yfinance as yf
         info = yf.Ticker(ticker).get_info()
@@ -405,6 +466,7 @@ def add_to_watchlist(body: AddPositionBody, db: Session = Depends(get_db)):
             name = info.get("shortName") or info.get("longName") or ""
         if info.get("quoteType") in ("ETF", "MUTUALFUND"):
             asset_class = "FUND"
+        yahoo_sector = YAHOO_SECTOR_MAP.get(info.get("sector") or "")
         if not currency:
             currency = info.get("currency")
     except Exception:
@@ -417,6 +479,8 @@ def add_to_watchlist(body: AddPositionBody, db: Session = Depends(get_db)):
     db.add(pos)
     db.commit()
     db.refresh(pos)
+    if asset_class == "STOCK" and yahoo_sector:
+        _save_sector(db, pos.name, yahoo_sector)
 
     verified = price is not None
     if verified:
@@ -509,3 +573,19 @@ def get_history(days: int = 800, db: Session = Depends(get_db)):
             "series": [[r.date.isoformat(), r.close_price] for r in rows],
         })
     return out
+
+
+# ---------- Nachrichten ----------
+
+@app.get("/api/news/titles")
+def get_news_titles(refresh: int = 0, db: Session = Depends(get_db)):
+    """Meldungen zu allen aktiven Einzelaktien. Ergebnis wird ca. 20 Minuten zwischengespeichert;
+    refresh=1 erzwingt einen neuen Abruf."""
+    positions = [(p.id, p.name, p.ticker) for p in
+                 db.query(Position).filter(Position.active == 1, Position.asset_class == "STOCK").all()]
+    return newsmod.fetch_titles(positions, force=bool(refresh))
+
+
+@app.get("/api/news/macro")
+def get_news_macro(refresh: int = 0):
+    return newsmod.fetch_macro(force=bool(refresh))
