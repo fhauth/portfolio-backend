@@ -55,7 +55,92 @@ POSITIONS = [
     # ETF_PERFORMANCE-Werte im Frontend).
     {"name": "iShares Core MSCI EM IMI (Benchmark-Proxy)",              "ticker": "IS3N.DE", "asset_class": "BENCHMARK", "benchmark_label": "MSCI Emerging Markets"},
     {"name": "iShares Core Global Aggregate Bond EUR Hedged (Benchmark-Proxy)", "ticker": "EUNA.DE", "asset_class": "BENCHMARK", "benchmark_label": "Bloomberg Global Aggregate"},
+
+    # Wechselkurse (Fremdwährung je 1 EUR) für die Handelssimulation, damit Kurse
+    # von US-/Korea-Titeln in Euro umgerechnet werden können. Kein Depot-Bestandteil.
+    # Weitere Währungen legt das Backend automatisch an, wenn ein Titel in einer
+    # anderen Währung zur Watchlist hinzugefügt wird.
+    {"name": "FX EUR/USD", "ticker": "EURUSD=X", "asset_class": "BENCHMARK"},
+    {"name": "FX EUR/KRW", "ticker": "EURKRW=X", "asset_class": "BENCHMARK"},
+
+    # Sektor-Subindizes (Xtrackers MSCI World je GICS-Sektor, Xetra) für den Vergleich
+    # "Einzeltitel vs. eigener Sektor" in der Portfolio-Überwachung. Kein Depot-Bestandteil.
+    # Immobilien werden bewusst nicht verglichen (keine Immobilienaktien im Depot).
+    {"name": "Sektor Industrie (MSCI World)",              "ticker": "XDWI.DE", "asset_class": "BENCHMARK"},
+    {"name": "Sektor Informationstechnologie (MSCI World)", "ticker": "XDWT.DE", "asset_class": "BENCHMARK"},
+    {"name": "Sektor Finanzwesen (MSCI World)",            "ticker": "XDWF.DE", "asset_class": "BENCHMARK"},
+    {"name": "Sektor Gesundheitswesen (MSCI World)",       "ticker": "XDWH.DE", "asset_class": "BENCHMARK"},
+    {"name": "Sektor Zykl. Konsumgüter (MSCI World)",      "ticker": "XDWC.DE", "asset_class": "BENCHMARK"},
+    {"name": "Sektor Basiskonsumgüter (MSCI World)",       "ticker": "XDWS.DE", "asset_class": "BENCHMARK"},
+    {"name": "Sektor Energie (MSCI World)",                "ticker": "XDW0.DE", "asset_class": "BENCHMARK"},
+    {"name": "Sektor Werkstoffe (MSCI World)",             "ticker": "XDWM.DE", "asset_class": "BENCHMARK"},
+    {"name": "Sektor Versorger (MSCI World)",              "ticker": "XDWU.DE", "asset_class": "BENCHMARK"},
+    {"name": "Sektor Kommunikationsdienste (MSCI World)",  "ticker": "XWTS.DE", "asset_class": "BENCHMARK"},
+
+    # Rückfall-Sektorvergleich: US Select Sector SPDR ETFs (USD, S&P 500). Wird nur genutzt,
+    # wenn der MSCI-World-Sektor-ETF oben keine Kurse liefert.
+    {"name": "Sektor Industrie (US, SPDR XLI)",              "ticker": "XLI",  "asset_class": "BENCHMARK"},
+    {"name": "Sektor Informationstechnologie (US, SPDR XLK)", "ticker": "XLK",  "asset_class": "BENCHMARK"},
+    {"name": "Sektor Finanzwesen (US, SPDR XLF)",            "ticker": "XLF",  "asset_class": "BENCHMARK"},
+    {"name": "Sektor Gesundheitswesen (US, SPDR XLV)",       "ticker": "XLV",  "asset_class": "BENCHMARK"},
+    {"name": "Sektor Zykl. Konsumgüter (US, SPDR XLY)",      "ticker": "XLY",  "asset_class": "BENCHMARK"},
+    {"name": "Sektor Basiskonsumgüter (US, SPDR XLP)",       "ticker": "XLP",  "asset_class": "BENCHMARK"},
+    {"name": "Sektor Energie (US, SPDR XLE)",                "ticker": "XLE",  "asset_class": "BENCHMARK"},
+    {"name": "Sektor Werkstoffe (US, SPDR XLB)",             "ticker": "XLB",  "asset_class": "BENCHMARK"},
+    {"name": "Sektor Versorger (US, SPDR XLU)",              "ticker": "XLU",  "asset_class": "BENCHMARK"},
+    {"name": "Sektor Kommunikationsdienste (US, SPDR XLC)",  "ticker": "XLC",  "asset_class": "BENCHMARK"},
 ]
+
+# GICS-Sektor (Bezeichnungen wie im Frontend, SECTORS) -> [bevorzugter Sektor-ETF, Rückfall-ETF]
+SECTOR_ETFS = {
+    "Industrie":               ["Sektor Industrie (MSCI World)",               "Sektor Industrie (US, SPDR XLI)"],
+    "Informationstechnologie": ["Sektor Informationstechnologie (MSCI World)", "Sektor Informationstechnologie (US, SPDR XLK)"],
+    "Finanzwesen":             ["Sektor Finanzwesen (MSCI World)",             "Sektor Finanzwesen (US, SPDR XLF)"],
+    "Gesundheitswesen":        ["Sektor Gesundheitswesen (MSCI World)",        "Sektor Gesundheitswesen (US, SPDR XLV)"],
+    "Zykl. Konsumgüter":       ["Sektor Zykl. Konsumgüter (MSCI World)",       "Sektor Zykl. Konsumgüter (US, SPDR XLY)"],
+    "Basiskonsumgüter":        ["Sektor Basiskonsumgüter (MSCI World)",        "Sektor Basiskonsumgüter (US, SPDR XLP)"],
+    "Energie":                 ["Sektor Energie (MSCI World)",                 "Sektor Energie (US, SPDR XLE)"],
+    "Werkstoffe":              ["Sektor Werkstoffe (MSCI World)",              "Sektor Werkstoffe (US, SPDR XLB)"],
+    "Versorger":               ["Sektor Versorger (MSCI World)",               "Sektor Versorger (US, SPDR XLU)"],
+    "Kommunikationsdienste":   ["Sektor Kommunikationsdienste (MSCI World)",   "Sektor Kommunikationsdienste (US, SPDR XLC)"],
+}
+
+# Sektor je Einzelaktie im Depot (GICS). Neue Titel über die Watchlist-Funktion
+# bekommen ihren Sektor automatisch von Yahoo (siehe app/main.py).
+STOCK_SECTORS = {
+    "ASML": "Informationstechnologie",
+    "Baker Hughes": "Energie",
+    "Boeing": "Industrie",
+    "Daimler Truck Holding": "Industrie",
+    "Ferrari": "Zykl. Konsumgüter",
+    "General Dynamics": "Industrie",
+    "Goldman Sachs": "Finanzwesen",
+    "Hermes": "Zykl. Konsumgüter",
+    "JPMorgan Chase": "Finanzwesen",
+    "Philip Morris": "Basiskonsumgüter",
+    "Rheinmetall": "Industrie",
+    "Rollins": "Industrie",
+    "SK Hynix (GDR)": "Informationstechnologie",
+    "Siemens": "Industrie",
+    "Siemens Energy": "Industrie",
+    "SpaceX": "Industrie",
+    "T-Mobile US": "Kommunikationsdienste",
+    "Waste Management": "Industrie",
+}
+
+# Yahoo-Finance-Sektorbezeichnung -> GICS-Sektor wie im Frontend
+YAHOO_SECTOR_MAP = {
+    "Industrials": "Industrie",
+    "Technology": "Informationstechnologie",
+    "Financial Services": "Finanzwesen",
+    "Healthcare": "Gesundheitswesen",
+    "Consumer Cyclical": "Zykl. Konsumgüter",
+    "Consumer Defensive": "Basiskonsumgüter",
+    "Energy": "Energie",
+    "Basic Materials": "Werkstoffe",
+    "Utilities": "Versorger",
+    "Communication Services": "Kommunikationsdienste",
+}
 
 
 # Aus der Überwachung genommene Positionen (werden in der DB deaktiviert und
