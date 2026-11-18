@@ -54,9 +54,9 @@ MACRO_FEEDS = [
 # und (falls vorhanden) die Domain der Quelle.
 AGENCY_NAME_RE = re.compile(
     r"\b(reuters|associated press|ap news|ap|afp|agence france[- ]presse|dpa|dpa-afx|"
-    r"deutsche presse[- ]agentur|bloomberg|dow jones)\b", re.IGNORECASE)
+    r"deutsche presse[- ]agentur|bloomberg|dow jones|wsj|marketwatch|wall street journal|cnn|cnn business|n-tv|n-tv\.de)\b", re.IGNORECASE)
 AGENCY_DOMAINS = ("reuters.com", "apnews.com", "afp.com", "dpa.com", "dpa-afx.de",
-                  "bloomberg.com", "dowjones.com")
+                  "bloomberg.com", "dowjones.com", "cnn.com", "n-tv.de", "wsj.com", "marketwatch.com")
 
 
 def is_agency(source, source_url=None):
@@ -69,7 +69,7 @@ def is_agency(source, source_url=None):
 
 
 # Site-Filter für die Google-News-Suche (reduziert Treffer auf Agenturseiten)
-AGENCY_SITE_QUERY = "(site:reuters.com OR site:apnews.com OR site:bloomberg.com OR site:afp.com OR site:dpa-afx.de)"
+AGENCY_SITE_QUERY = "(site:reuters.com OR site:apnews.com OR site:bloomberg.com OR site:afp.com OR site:dpa-afx.de OR site:cnn.com OR site:n-tv.de OR site:wsj.com OR site:marketwatch.com)"
 
 _cache = {}
 
