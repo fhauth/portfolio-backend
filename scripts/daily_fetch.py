@@ -26,7 +26,9 @@ from datetime import date, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.database import init_db, SessionLocal, Position, PriceHistory, Fundamentals
+import json
+from app.database import init_db, SessionLocal, Position, PriceHistory, Fundamentals, AppState
+from app import edgar
 from app.seed_positions import seed
 from app.fetch_prices import fetch_all
 from app.fetch_fundamentals import fetch_fundamentals_for_ticker, compute_annualized_volatility, backfill_history
@@ -119,6 +121,10 @@ def fetch_and_save_fundamentals(db, positions):
     targets = [p for p in positions if p.asset_class in ("STOCK", "FUND")]
     print(f"\nRufe Fundamentaldaten für {len(targets)} Positionen ab ...")
     ok, failed = 0, []
+    sources = {}   # Ticker -> Herkunft der Kennzahlen (SEC EDGAR), wird im Tool angezeigt
+    edgar_on = bool(os.environ.get("SEC_CONTACT", "").strip())
+    if not edgar_on:
+        print("  Hinweis: SEC_CONTACT nicht gesetzt - EPS/Dividende kommen nur von Yahoo.")
     for pos in targets:
         data = fetch_fundamentals_for_ticker(pos.ticker) or {}
         time.sleep(1.5)  # Pause gegen Yahoo-Rate-Limit
@@ -160,12 +166,37 @@ def fetch_and_save_fundamentals(db, positions):
             row.price_target_high = None
             row.price_target_low = None
 
+        # US-Titel: EPS und Dividendenrendite direkt aus den SEC-Berichten (Yahoo bleibt Rückfall)
+        if pos.asset_class == "STOCK" and edgar_on:
+            m = edgar.fetch_us_metrics(pos.ticker)
+            if m:
+                src = {}
+                last = history_rows[-1].close_price if history_rows else None
+                if "eps" in m:
+                    row.eps_ttm = round(m["eps"]["value"], 4)
+                    src["eps"] = {"basis": m["eps"]["basis"], "periodEnd": str(m["eps"]["period_end"]), "form": m["eps"]["form"]}
+                if "dps" in m and last and last > 0:
+                    row.dividend_yield = round(m["dps"]["value"] / last * 100, 4)
+                    src["div"] = {"basis": m["dps"]["basis"], "periodEnd": str(m["dps"]["period_end"]), "form": m["dps"]["form"], "dps": round(m["dps"]["value"], 4)}
+                if src:
+                    sources[pos.ticker] = src
+                    print(f"    SEC EDGAR {pos.ticker}: " + ", ".join(f"{k}: {v['basis']} bis {v['periodEnd']} ({v['form']})" for k, v in src.items()))
+            else:
+                print(f"    SEC EDGAR {pos.ticker}: keine Daten (Yahoo-Werte bleiben).")
+
         ok += 1
         print(f"  ✓ {pos.name}: Beta={row.beta}, Vola={row.volatility_1y}%, "
               f"Div.-Rendite={row.dividend_yield}%, EPS={row.eps_ttm}"
               + (f", Rating={row.analyst_rating_key} ({row.num_analysts} Analysten), Kursziel Ø={row.price_target_mean}"
                  if pos.asset_class == "STOCK" else " (Analysten-Daten: n/a bei Fonds)"))
 
+    if edgar_on:
+        row_s = db.query(AppState).filter(AppState.key == "fundamentals_source").first()
+        payload = json.dumps(sources, ensure_ascii=False)
+        if row_s:
+            row_s.value_json = payload
+        else:
+            db.add(AppState(key="fundamentals_source", value_json=payload))
     db.commit()
     print(f"Fundamentaldaten: {ok} aktualisiert.")
 
