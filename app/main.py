@@ -247,6 +247,11 @@ def get_fundamentals(db: Session = Depends(get_db)):
     liegen, nicht in dieser Datenbank.
     """
     positions = db.query(Position).filter(Position.active == 1, Position.asset_class.in_(["STOCK", "FUND"])).all()
+    src_row = db.query(AppState).filter(AppState.key == "fundamentals_source").first()
+    try:
+        sources = json.loads(src_row.value_json) if src_row else {}
+    except Exception:
+        sources = {}
     out = []
     for p in positions:
         f = db.query(Fundamentals).filter(Fundamentals.position_id == p.id).first()
@@ -282,6 +287,7 @@ def get_fundamentals(db: Session = Depends(get_db)):
             "upsidePct": upside,
             "currency": f.currency if f else None,
             "updatedAt": f.updated_at.isoformat() if f and f.updated_at else None,
+            "secSource": sources.get(p.ticker),
         })
     return out
 
@@ -291,6 +297,11 @@ def refresh_fundamentals(db: Session = Depends(get_db)):
     """Manueller Sofort-Abruf der Fundamentaldaten (dauert länger als
     /watchlist/refresh, da yfinance.get_info() pro Titel mehr Daten zieht)."""
     positions = db.query(Position).filter(Position.active == 1, Position.asset_class.in_(["STOCK", "FUND"])).all()
+    src_row = db.query(AppState).filter(AppState.key == "fundamentals_source").first()
+    try:
+        sec_sources = json.loads(src_row.value_json) if src_row else {}
+    except Exception:
+        sec_sources = {}
     ok, failed = 0, []
     for pos in positions:
         data = fetch_fundamentals_for_ticker(pos.ticker)
@@ -314,8 +325,11 @@ def refresh_fundamentals(db: Session = Depends(get_db)):
 
         row.beta = data.get("beta")
         row.volatility_1y = volatility
-        row.dividend_yield = data.get("dividend_yield")
-        row.eps_ttm = data.get("eps_ttm")
+        sec = sec_sources.get(pos.ticker) or {}
+        if "div" not in sec:
+            row.dividend_yield = data.get("dividend_yield")
+        if "eps" not in sec:
+            row.eps_ttm = data.get("eps_ttm")
         row.currency = data.get("currency")
 
         # Analysten-Konsens/Kursziel NUR für Einzelaktien - bei Fonds/ETFs
